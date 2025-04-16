@@ -3,7 +3,7 @@ from django.contrib import admin
 from .models import Category, Post, Heading, PostAnalytics, CategoryAnalytics
 from ..media.models import Media
 
-
+#First
 @admin.register(Category)
 class CategoryAdmin(admin.ModelAdmin):
     list_display = ('name','title','parent','slug','thumbnail_preview')
