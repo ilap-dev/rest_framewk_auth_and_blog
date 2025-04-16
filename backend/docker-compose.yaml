@@ -1,0 +1,63 @@
+services:
+  #Django authentication appserver
+  blog_w_authentication_backend:
+    container_name: blog_w_authentication_django
+    build: .
+    command: uvicorn core.asgi:application --host 0.0.0.0 --port 8003 --reload
+    volumes:
+      - .:/app
+    ports:
+      - 8003:8003
+    depends_on:
+      - blog_w_authentication_django_redis
+      - blog_w_authentication_django_db
+
+  #Django authentication Redis
+  blog_w_authentication_django_redis:
+    image: redis
+    container_name: blog_w_authentication_django_redis
+    ports:
+      - 6379:6380
+
+  #Database authentication
+  blog_w_authentication_django_db:
+    image: postgres
+    container_name: blog_w_authentication_postgresql
+    restart: always
+    environment:
+      POSTGRES_DB: django_db
+      POSTGRES_USER: django
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - 5432:5434
+    volumes:
+      - .dbdata:/var/lib/postgresql
+
+
+  #Celery sever worker
+  celery_worker:
+    container_name: blog_celery_worker
+    build: .
+    command: celery -A core worker --loglevel=info
+    environment:
+      - DJANGO_SETTINGS_MODULE=core.settings
+    volumes:
+      - .:/app
+    ports:
+      - 8004:8004
+    depends_on:
+      - blog_w_authentication_django_redis
+      - blog_w_authentication_django_db
+
+  #celery beat
+  celery_beat:
+    container_name: blog_celery_beat
+    build: .
+    command: celery -A core beat -l INFO --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    volumes:
+      - .:/app
+    ports:
+      - 8005:8005
+    depends_on:
+      - blog_w_authentication_django_redis
+      - blog_w_authentication_django_db

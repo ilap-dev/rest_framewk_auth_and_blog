@@ -1,0 +1,29 @@
+FROM python:3.13
+
+#install SSH client
+RUN apt-get update && apt-get install -y openssh-client \
+    libpq-dev gcc python3-dev musl-dev
+
+#set enviroment variables
+#Tiene el proposito de desactivar el buffer estandar de salida y error de Python
+#Pyhton acumula los datos en un buffer o memoria temporal antes de escribirlos en
+# la salida, lo anterior hace que los errores se escriban de manera inmediata en la
+# los logs de la consola aumentando la eficiencia de la aplicacion.
+ENV PYTHONUNBUFFERED 1
+
+#Se le indica a Docker que nuestra aplicacion Django esta dentro de un directorio
+#llamado 'app"
+WORKDIR /app
+
+#Copy requirements.txt file
+COPY requirements.txt /app/requirements.txt
+
+#Install python dependencies
+RUN pip install -r requirements.txt
+
+#Copy the application to the working directory
+#Copiar todo al directorio 'app'
+COPY . /app
+
+#Start the SSH tunnel
+CMD python manage.py runserver 0.0.0.0:8000
