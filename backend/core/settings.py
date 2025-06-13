@@ -33,13 +33,17 @@ VALID_API_KEYS = env.str("VALID_API_KEYS").split(",")
 DEBUG = True
 
 ALLOWED_HOSTS = env.list('ALLOWED_HOSTS')
+CORS_ORIGIN_WHITELIST = env.list("CORS_ORIGIN_WHITELIST")
+CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS")
 
+SITE_ID = 1
 
 # Application definition
 
 DJANGO_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
+    'django.contrib.sites',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
@@ -54,6 +58,7 @@ PROJECT_APPS = [
 ]
 
 THIRD_PARTY_APPS=[
+    'corsheaders',
     'rest_framework',
     'rest_framework_api',
     'channels',
@@ -80,7 +85,7 @@ CKEDITOR_CONFIGS = {
 CKEDITOR_UPLOAD_PATH = 'media/'
 
 AXES_FAILURE_LIMIT = 5
-AXES_COOLOFF_TIME= lambda request: timedelta(minutes=1)
+AXES_COOLOFF_TIME= lambda request: timedelta(minutes=3)
 AXES_LOCK_OUT_AT_FAILURE = True #in minutes
 
 MIDDLEWARE = [
@@ -92,6 +97,12 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+
+    # AxesMiddleware should be the last middleware in the MIDDLEWARE list.
+    # It only formats user lockout messages and renders Axes lockout responses
+    # on failed user authentication attempts from login views.
+    # If you do not want Axes to override the authentication response
+    # you can skip installing the middleware and use your own views.
     'axes.middleware.AxesMiddleware',
 ]
 
@@ -100,7 +111,7 @@ ROOT_URLCONF = 'core.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [os.path.join(BASE_DIR,"templates")],
+        'DIRS': [os.path.join(BASE_DIR, "templates")],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -164,11 +175,8 @@ AUTH_PASSWORD_VALIDATORS = [
 # https://docs.djangoproject.com/en/4.2/topics/i18n/
 
 LANGUAGE_CODE = 'en-us'
-
 TIME_ZONE = 'UTC'
-
 USE_I18N = True
-
 USE_TZ = True
 
 
@@ -183,22 +191,22 @@ USE_TZ = True
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-REDIS_HOST = env("REDIS_HOST")
 
-REST_FRAMEWORK = {
     #Si una persona esta autenticada puede hacer uso completo del CRUD
     #Sino solo puede hacer uso de los get
-    "DEFAULT_PERMISSION_CLASSES":[
+REST_FRAMEWORK = {
+    "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticatedOrReadOnly"
     ],
-    "DEFAULT_AUTHENTICATION_CLASSES":[
+    "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework_simplejwt.authentication.JWTAuthentication"
     ]
 }
 
 
 AUTHENTICATION_BACKENDS = (
-    "axes.backends.AxesStandaloneBackend",
+    # AxesStandaloneBackend should be the first backend in the AUTHENTICATION_BACKENDS list.
+    'axes.backends.AxesStandaloneBackend',
     "django.contrib.auth.backends.ModelBackend",
 )
 
@@ -206,58 +214,63 @@ AUTH_USER_MODEL = "authentication.UserAccount"
 
 
 SIMPLE_JWT = {
-    "AUTH_HEADER_TYPES":("JWT",),
-    "ACCESS_TOKEN_LIFETIME": timedelta(days=15),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=30),
+    "AUTH_HEADER_TYPES": ("JWT",),
+    "ACCESS_TOKEN_LIFETIME": timedelta(days=30),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=60),
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
-    "AUTH_TOKEN_CLASSES":("rest_framework_simplejwt.tokens.AccessToken",),
+    "AUTH_TOKEN_CLASSES": ("rest_framework_simplejwt.tokens.AccessToken",),
     "SIGNING_KEY": env("SECRET_KEY"),
 }
 
 DJOSER = {
-    'LOGIN_FIELD':'email',
-    'SER_CREATE_PASSWORD_RETYPE':True,
-    'USERNAME_CHANGED_EMAIL_CONFIRMATION':True,
-    'PASSWORD_CHANGED_EMAIL_CONFIRMATION':True,
-    'SEND_CONFIRMATION_EMAIL':True,
-    'SEND_ACTIVATION_EMAIL':True,
-    'PASSWORD_RESET_CONFIRM_URL': 'email/password_reset_confirm/{uid}/{token}',
+    'LOGIN_FIELD': "email",
+    'USER_CREATE_PASSWORD_RETYPE': True,
+    "USERNAME_CHANGED_EMAIL_CONFIRMATION": True,
+    "PASSWORD_CHANGED_EMAIL_CONFIRMATION": True,
+    "SEND_CONFIRMATION_EMAIL": True,
+    "SEND_ACTIVATION_EMAIL": True,
+
+    'PASSWORD_RESET_CONFIRM_URL': 'forgot-password-confirm/?uid={uid}&token={token}',
     'USERNAME_RESET_CONFIRM_URL': 'email/username_reset_confirm/{uid}/{token}',
-    'ACTIVATION_URL': 'email/activate/{uid}/{token}',
+    'ACTIVATION_URL': 'activate/?uid={uid}&token={token}',
+
     'SERIALIZERS': {
-        'user_create':'apps.authentication.serializers.UserCreateSerializer',
-        'user':'apps.authentication.serializers.UserSerializer',
-        'current_user':'apps.authentication.serializers.UserSerializer',
-        'user_delete':'djoser.serializers.UserDeleteSerializer'
+        "user_create": "apps.authentication.serializers.UserCreateSerializer",
+        "user": "apps.authentication.serializers.UserSerializer",
+        "current_user": "apps.authentication.serializers.UserSerializer",
+        "user_delete": "djoser.serializers.UserDeleteSerializer"
     },
-    'TEMPLATES':{
-        'activation':'email/auth/activation.html',
-        'confirmation':'email/auth/confirmation.html',
-        'password_changed_confirmation':'email/auth/password_changed_confirmation.html',
-        'password_reset': 'email/auth/password_reset.html',
-        'username_changed_confirmation': 'email/auth/username_changed_confirmation.html',
-        'username_reset': 'email/auth/username_reset.html',
+
+    'TEMPLATES': {
+        "activation": "email/auth/activation.html",
+        "confirmation": "email/auth/confirmation.html",
+        "password_reset": "email/auth/password_reset.html",
+        "password_changed_confirmation": "email/auth/password_changed_confirmation.html",
+        "username_changed_confirmation": "email/auth/username_changed_confirmation.html",
+        "username_reset": "email/auth/username_reset.html",
     }
 }
 
 #se usa uvicorn y channels para usar asgi, y nuestra aplicacion sea mas rapida
-CHANNELS_LAYERS = {
-    "default":{
-        "BACKEND":"channels_redis.core.RedisChannelLayer",
-        "CONFIG":{
-            "hosts":[env("REDIS_URL")]
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [env("REDIS_URL")]
         }
     }
 }
+
+REDIS_HOST = env("REDIS_HOST")
 
 #REDIS_HOST = env("REDIS_HOST")
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
         "LOCATION": env("REDIS_URL"),
-        "OPTIONS":{
-            "CLIENT_CLASS":"django_redis.client.DefaultClient"
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient"
         }
     }
 }
@@ -278,10 +291,12 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
 
 CELERY_RESULT_BACKEND = 'django-db'
 CELERY_CACHE_BACKEND = 'default'
+
 CELERY_IMPORTS = (
     'core.tasks',
     'apps.blog.tasks'
 )
+
 # para migrar las base de datos de celery beat, usar en una line de comandos bash:
 # python manage.py migrate django_celery_beat
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
@@ -306,10 +321,10 @@ AWS_S3_DOMAIN = f"{AWS_STORAGE_BUCKET_NAME}.s3.{AWS_S3_REGION_NAME}.amazonaws.co
 #AWS_S3_CUSTOM_DOMAIN = f"{AWS_STORAGE_BUCKET_NAME}.s3.{AWS_S3_REGION_NAME}.amazonaws.com"
 
 #Configuracion de seguridad y permisos
-AWS_QUERYSTRING_AUTH = False #Deshabilita las firmas en las URLS (archivos publicos)
-AWS_FILE_OVERWRITE = False #Deshabilita sobreescribir archivos con el mismo nombre
-AWS_DEFAULT_ACL = None #Define el control de accesp predeterminado como publico
-AWS_QUERYSTRING_EXPIRE = 5 #Tiempo de expiracion de las URLS firmadas
+AWS_QUERYSTRING_AUTH = False # Deshabilita las firmas en las URLs (archivos públicos)
+AWS_FILE_OVERWRITE = False # Evita sobrescribir archivos con el mismo nombre
+AWS_DEFAULT_ACL = None # Define el control de acceso predeterminado como público
+AWS_QUERYSTRING_EXPIRE = 5 # Tiempo de expiración de las URLs firmadas
 
 #Parametros adicionales para los objetos de S3
 AWS_S3_OBJECT_PARAMETERS ={
@@ -323,9 +338,8 @@ STATICFILES_STORAGE = 'core.storage_backends.StaticStorage'
 #STATIC_ROOT = os.path.join(BASE_DIR, "static")
 
 MEDIA_LOCATION = "media"
-MEDIA_URL = f"{AWS_S3_CUSTOM_DOMAIN}/{MEDIA_LOCATION}/"
-#MEDIA_ROOT = MEDIA_URL
-
+#MEDIA_URL = f"{AWS_S3_CUSTOM_DOMAIN}/{MEDIA_LOCATION}/"
+MEDIA_URL = f"https://{AWS_CLOUDFRONT_DOMAIN}/{MEDIA_LOCATION}/"
 #Configuracion de almacenamiento predeterminado
 DEFAULT_FILE_STORAGE = "core.storage_backends.PublicMediaStorage"
 

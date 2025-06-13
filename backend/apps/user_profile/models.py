@@ -3,8 +3,6 @@ from django.db import models
 from ckeditor.fields import RichTextField
 from django.conf import settings
 from djoser.signals import user_registered, user_activated
-
-from ..authentication.models import UserAccount
 from ..media.models import Media
 from ..media.serializers import MediaSerializer
 from django.utils.html import format_html
@@ -34,19 +32,19 @@ class UserProfile(models.Model):
         related_name="banner_picture"
     )
 
-    birthday = models.DateField(blank=True, null=True)
-    biography = RichTextField(blank=True, null=True)
-    website = models.URLField(blank=True, null=True)
-    instagram = models.URLField(blank=True, null=True)
-    youtube = models.URLField(blank=True, null=True)
-    facebook = models.URLField(blank=True, null=True)
+    birthday = models.DateField(null=True, blank=True, default=None)
+    biography = RichTextField(null=True, blank=True, default=None)
+    website = models.URLField(null=True, blank=True, default=None)
+    instagram = models.URLField(null=True, blank=True, default=None)
+    youtube = models.URLField(null=True, blank=True, default=None)
+    facebook = models.URLField(null=True, blank=True, default=None)
 
     def profile_picture_preview(self):
         if self.profile_picture:
             serializer = MediaSerializer(instance=self.profile_picture)
             url = serializer.data.get('url')
             if url:
-                return format_html('<img src="{}" style="width: 100px; height: auto; />',url)
+                return format_html('<img src="{}" style="width: 50px; height: auto;" />', url)
         return 'No Profile Picture'
 
     def banner_picture_preview(self):
@@ -54,7 +52,7 @@ class UserProfile(models.Model):
             serializer = MediaSerializer(instance=self.banner_picture)
             url = serializer.data.get('url')
             if url:
-                return format_html('<img src="{}" style="width: 100px; height: auto; />',url)
+                return format_html('<img src="{}" style="width: 50px; height: auto;" />', url)
         return 'No Banner Picture'
 
     profile_picture_preview.short_description = "Profile Picture Preview"
