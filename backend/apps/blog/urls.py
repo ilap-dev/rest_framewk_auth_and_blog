@@ -6,7 +6,9 @@ from .views import (PostListView,
                     CategoryListView,
                     CategoryDetailView,
                     GenerateFakePostsView,
-                    GenerateFakeAnalyticsView, IncrementCategoryClickView
+                    GenerateFakeAnalyticsView,
+                    IncrementCategoryClickView,
+                    PostCommentViews, ListPostCommentsView
                     )
 
 urlpatterns = [
@@ -19,4 +21,6 @@ urlpatterns = [
     path('categories/', CategoryListView.as_view(), name='category-list'),
     path('category/posts/', CategoryDetailView.as_view(), name='category-posts'),
     path('category/increment_click/', IncrementCategoryClickView.as_view(), name='increment-category-click'),
+    path('post/comment/', PostCommentViews.as_view()),
+    path('post/comments/', ListPostCommentsView.as_view()),
 ]

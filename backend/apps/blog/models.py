@@ -1,4 +1,6 @@
 import uuid
+from email.policy import default
+from ipaddress import ip_address
 
 from django.core.serializers import serialize
 from django.db import models
@@ -12,7 +14,10 @@ from core.storage_backends import PublicMediaStorage
 from ..media.models import Media
 from ..media.serializers import MediaSerializer
 from django.utils.text import slugify
+from django.conf import settings
+from django.utils import timezone
 
+User = settings.AUTH_USER_MODEL
 
 #Crear una funcion que permita guardar la imagen en el blog especifico
 #creado por el usuario
@@ -114,6 +119,7 @@ class Post(models.Model):
     )
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='user_post')
     title = models.CharField(max_length=128)
     description =  models.CharField(max_length=256)
     #views = models.PositiveIntegerField(default=0)  # Agregar el campo con valor predeterminado
@@ -151,25 +157,154 @@ class Post(models.Model):
         return 'No Thumbnail'
     thumbnail_preview.short_description = "Thumbnail Preview"
 
+class Comment(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='user_comments')
+    post = models.ForeignKey(Post, on_delete=models.CASCADE, related_name='post_comments')
+    parent = models.ForeignKey("self", on_delete=models.CASCADE, null=True, blank=True, related_name='comment_replies')
+    content = RichTextField()
+    created_at = models.DateTimeField(default=now)
+    updated_at = models.DateTimeField(auto_now=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Comment by {self.user.username} on {self.post.title}"
+
+    def get_replies(self):
+        return self.replies.filter(is_active=True)
+
+class PostLike(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    post = models.ForeignKey(Post, on_delete=models.CASCADE, related_name="likes")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="post_likes")
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("post","user")
+        ordering = ["-timestamp"]
+
+    def __str__(self):
+        return f"Like by {self.user.username} on {self.post.title}"
+
+class PostShare(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    post = models.ForeignKey(Post, on_delete=models.CASCADE, related_name="shares")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="post_shares", null=True, blank=True)
+    platform = models.CharField(
+        max_length=50,
+        choices=(
+            ("facebook","Facebook"),
+            ("twitter", "Twitter"),
+            ("linkedin", "LinkedIn"),
+            ("whatsapp", "Whatsapp"),
+            ("other", "Other"),
+        ),
+        blank=True,
+        null=True,
+    )
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Share by {self.user.username if self.user else 'Anonymous'} on {self.post.title} via {self.platform}"
+
+class PostInteraction(models.Model):
+    INTERACTION_CHOICES = (
+        ('view','View'),
+        ('like', 'Like'),
+        ('comment', 'Comment'),
+        ('share', 'Share'),
+    )
+
+    INTERACTION_TYPE_CATEGORIES = (
+        ('passive','Passive'),
+        ('active', 'Active'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='user_post_interactions', null=True, blank=True)
+    post = models.ForeignKey(Post, on_delete=models.CASCADE, related_name='post_interactions')
+    comment = models.ForeignKey(
+        Comment, on_delete=models.SET_NULL, null=True, blank=True, related_name="interaction"
+    )
+    interaction_type = models.CharField(max_length=12, choices=INTERACTION_CHOICES)
+    interaction_category = models.CharField(max_length=12,
+                                            choices=INTERACTION_TYPE_CATEGORIES,
+                                            default="passive",
+                                            )
+    weight = models.FloatField(default=1.0)
+    timestamp = models.DateTimeField(auto_now_add=True)
+    device_type=models.CharField(
+        max_length=50, blank=True, null=True, choices=(("desktop", "Desktop"), ("mobile","Mobile"), ("tablet","Tablet"))
+    )
+    ip_address = models.GenericIPAddressField(blank=True, null=True)
+    hour_of_day = models.IntegerField(null=True, blank=True)#(0-23 hrs)
+    day_of_week = models.IntegerField(null=True, blank=True)#(0=domingo 6=sabado)
+
+    class Meta:
+        unique_together = ('user', 'post', 'interaction_type','comment') #Restriccion unica compuesta: django no permitira que se creen 2 registros que tengan los mismos valores: user, post e interaction type
+        ordering = ['-timestamp']
+
+    def __str__(self):
+        username = self.user.username if self.user else "Anonymous"
+        return f"{username} {self.interaction_type} {self.post.title}"
+
+    def detect_anomalies(user, post):
+        recent_interactions = PostInteraction.objects.filter(
+            user=user,
+            post=post,
+            timestamp__gte=timezone.now() - timezone.timedelta(minutes=10)
+        )
+        if recent_interactions.count() > 50:
+            raise ValueError("Anomalous Behavior Detected!")
+
+    def clean(self):
+        #Validar que las interacciones tipo comment tengan un comentario asociado:
+        if self.interaction_type == 'comment' and not self.comment:
+            raise ValueError("Interacciones de tipo 'comment' deben tener un comentario asociado")
+        if self.interaction_type in ['view','like','share'] and self.comment:
+            raise ValueError("Interacciones de tipo 'view','like','share' no deben tener un comentario asociado")
+
+    def save(self, *args, **kwargs):
+        if self.interaction_type == 'view':
+            self.interaction_category = 'passive'
+        else:
+            self.interaction_category = 'active'
+
+        now = timezone.now()
+
+        self.hour_of_day = now.hour
+        self.day_of_week = now.weekday()
+
+        super().save(*args, **kwargs)
+
 class PostView(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    post = models.ForeignKey(Post, on_delete=models.CASCADE, related_name='post_view')
+    post = models.ForeignKey(Post, on_delete=models.CASCADE, related_name='views')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='post_views', null=True, blank=True)
     ip_address = models.GenericIPAddressField()
     timestamp = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        unique_together = ("post","user","ip_address")
+        ordering = ["-timestamp"]
+    def __str__(self):
+        return f"View by {self.user.username if self.user else 'Anonymous' } on {self.post.title}"
 
 class PostAnalytics(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     post = models.OneToOneField(Post, on_delete=models.CASCADE, related_name='post_analytics')
-    views = models.PositiveIntegerField(default=0)
+
     impressions = models.PositiveIntegerField(default=0)
     clicks = models.PositiveIntegerField(default=0)
     click_through_rate = models.FloatField(default=0)
     avg_time_on_page = models.FloatField(default=0)
 
-    def increment_click(self):
-        self.clicks += 1
-        self.save()
-        self._update_click_through_rate()
+    views = models.PositiveIntegerField(default=0)
+    likes = models.PositiveIntegerField(default=0)
+    comments = models.PositiveIntegerField(default=0)
+    shares = models.PositiveIntegerField(default=0)
 
     def _update_click_through_rate(self):
         if self.impressions > 0:
@@ -178,17 +313,26 @@ class PostAnalytics(models.Model):
             self.click_through_rate = 0
         self.save()
 
-    def increment_impression(self):
-        self.impressions += 1
-        self.save()
-        self._update_click_through_rate()
-
-    def increment_view(self, ip_address):
-        #ip_address = get_client_ip(request)
-        if not PostView.objects.filter(post=self.post, ip_address=ip_address).exists():
-            PostView.objects.create(post=self.post, ip_address=ip_address)
-            self.views +=1
+    def increment_metric(self, metric_name):
+        if hasattr(self, metric_name):
+            setattr(self, metric_name, getattr(self, metric_name)+1)
             self.save()
+        else:
+            raise ValueError(f"Metric '{metric_name}' does not exits in PostAnalytics")
+
+    def increment_like(self):
+        self.likes += 1
+        self.save()
+
+
+    def increment_comment(self):
+        self.comments += 1
+        self.save()
+
+
+    def increment_share(self):
+        self.shares += 1
+        self.save()
 
 class Heading(models.Model):
     """Crear una clase que permita crear un menu html del post"""
@@ -228,3 +372,31 @@ def create_post_analytics(sender, instance, created, **kwargs):
 def create_category_analytics(sender, instance, created, **kwargs):
     if created:
         CategoryAnalytics.objects.create(category=instance)
+
+
+@receiver(post_save, sender=PostLike)
+def handle_post_like(sender, instance, created, **kwargs):
+    if created:
+        PostInteraction.objects.create(
+            user=instance.user,
+            post=instance.post,
+            interaction_type="like",
+        )
+        analytics, _ = PostAnalytics.objects.get_or_create(post=instance.post)
+        analytics.increment_like()
+
+@receiver(post_save, sender=PostShare)
+def handle_post_share(sender, instance, created, **kwargs):
+    if created:
+        PostInteraction.objects.create(
+            user=instance.user,
+            post=instance.post,
+            interaction_type="share",
+        )
+        analytics, _ = PostAnalytics.objects.get_or_create(post=instance.post)
+        analytics.increment_share()
+
+
+
+
+

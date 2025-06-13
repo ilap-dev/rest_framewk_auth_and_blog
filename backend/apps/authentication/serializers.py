@@ -18,6 +18,8 @@ class UserSerializer(serializers.ModelSerializer):
             "username",
             "first_name",
             "last_name",
+            "role",
+            "verified",
             "update_at",
             "two_factor_enabled",
             "otpauth_url",
@@ -35,6 +37,8 @@ class UserPublicSerializer(serializers.ModelSerializer):
             "first_name",
             "last_name",
             "update_at",
+            "role",
+            "verified",
         ]
 
 

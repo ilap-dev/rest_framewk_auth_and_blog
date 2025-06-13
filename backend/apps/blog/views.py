@@ -1,4 +1,5 @@
 import uuid
+from ipaddress import ip_address
 
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.views import APIView
@@ -16,8 +17,8 @@ from django.views.decorators.cache import cache_page
 from django.core.cache import cache
 from unicodedata import category
 
-from .models import Post, Heading, PostAnalytics, Category, CategoryAnalytics
-from .serializers import PostListSerializer, PostSerializer, HeadingSerializer, CategoryListSerializer
+from .models import (Post, Heading, PostAnalytics, Category, CategoryAnalytics, PostInteraction, PostView, Comment)
+from .serializers import (PostListSerializer, PostSerializer, HeadingSerializer, CategoryListSerializer, CommentSerializer)
 from core.permissions import HasValidAPIKey
 from .utils import get_client_ip
 from .tasks import increment_post_view_task
@@ -26,6 +27,8 @@ import random
 from django.utils.text import slugify
 from django.db.models import Q, F, Prefetch
 from django.shortcuts import get_object_or_404
+from apps.authentication.models import UserAccount
+from utils.string_utils import sanitize_string
 
 redis_client = redis.StrictRedis(host=settings.REDIS_HOST, port=6379, db=0)
 
@@ -42,9 +45,10 @@ class PostListView(StandardAPIView):
             search = request.query_params.get("search","").strip()
             sorting = request.query_params.get("sorting", None)
             ordering = request.query_params.get("ordering", None)
-            #categories = request.query_params.getlist("category", [])
+            categories = request.query_params.getlist("category", [])
+            page = request.query_params.get("p","1")
+            #cache_key = f"post_list:{search}:{sorting}:{ordering}:{categories}:{page}"
             cache_key = f"post_list:{search}:{sorting}:{ordering}"
-
             #HACER CACHE PERSONALIZADA
             #Verificar si los datos que se requieren estan en una cache guardada
             cached_posts = cache.get(cache_key)
@@ -122,26 +126,55 @@ class PostDetailView(StandardAPIView):
     def get(self, request):
         ip_address = get_client_ip(request)
         slug = request.query_params.get("slug")
+        user = request.user if request.user.is_authenticated else None
+
+        if not slug:
+            raise NotFound(detail="A valid slug must be provided")
+
         try:
+            #    increment_post_view_task.delay(cached_post['slug'], ip_address)
+            #    return self.response(cached_post)
+            #sino esta en cache, obtener el post de la base de datos
             cached_post = cache.get(f"post_detail:{slug}")
             if cached_post:
-                increment_post_view_task.delay(cached_post['slug'], ip_address)
-                return self.response(cached_post)
-            #sino esta en cache, obtener el post de la base de datos
+                serialized_post = PostSerializer(cached_post).data
+                self._register_view_interaction(cached_post, ip_address,user)
+                return self.response(serialized_post)
+
             post = Post.postobjects.get(slug=slug)
             serialized_post = PostSerializer(post).data
             #Guardar el post en la cache
-            cache.set(f"post_detail:{slug}", serialized_post, timeout=(60*5))
+            cache.set(f"post_detail:{slug}", post, timeout=60 * 5 )
 
-            # TODO Incrementar vistas en segundo plano
-            increment_post_view_task.delay(post.slug, ip_address)
+            self._register_view_interaction(post, ip_address, user)
 
-            return self.paginate(request, serialized_post)
+            ##return self.paginate(request, serialized_post)
 
         except Post.DoesNotExist:
             raise NotFound(detail="The request Post does not exist")
         except Exception as e:
             raise APIException(detail=f"An Unexpected Error Ocurred HERE: {str(e)}")
+
+        return self.response(serialized_post)
+
+    def _register_view_interaction(self, post, ip_address, user):
+
+        if not PostView.objects.filter(post=post, ip_address=ip_address, user=user).exists():
+            PostView.objects.create(post=post, ip_address=ip_address, user=user)
+            try:
+                PostInteraction.objects.create(
+                    user=user,
+                    post=post,
+                    interaction_type="view",
+                    ip_address=ip_address,
+                )
+            except Exception as e:
+                raise ValueError(f"Error Creating Postinteraction: {e}")
+
+            analytics, _ = PostAnalytics.objects.get_or_create(post=post)
+            analytics.increment_metric('view')
+
+
 
 class PostHeadingView(StandardAPIView):
     # Establecer un api key para permitir/denegar el uso de la solicitud HTTP
@@ -159,8 +192,8 @@ class PostHeadingView(StandardAPIView):
     # aqui se mantiene la cache por un minuto (60 * 1) y luego se elimina automaticamente
     #@method_decorator(cache_page(60 * 1))
     #def get_queryset(self):
-        #post_slug = self.kwargs.get('slug')
-        #return Heading.objects.filter(post__slug = post_slug)
+    #post_slug = self.kwargs.get('slug')
+    #return Heading.objects.filter(post__slug = post_slug)
 
 class IncrementPostClickView(StandardAPIView):
     # Establecer un api key para permitir/denegar el uso de la solicitud HTTP
@@ -207,6 +240,90 @@ class IncrementCategoryClickView(StandardAPIView):
             "message":"Click Incremented Successfully",
             "clicks": category_analytics.clicks
         })
+
+class ListPostCommentsView(StandardAPIView):
+    def get(self, request):
+        post_slug = request.query_params.get("slug", None)
+
+        if not post_slug:
+            raise NotFound(detail= "A valid post must be provided")
+
+        try:
+            post = Post.objects.get(slug=post_slug)
+        except Post.DoesNotExist:
+            raise ValueError(f"Post: {post_slug} doesn't exist")
+        #Obtener solo los comentarios principales
+        comments = Comment.objects.filter(post=post, parent=None)
+        serialized_comments = CommentSerializer(comments, many=True).data
+
+        return self.paginate(request, serialized_comments)
+
+class PostCommentViews(StandardAPIView):
+    def post(self, request):
+        post_slug = request.data.get("slug", None)
+        user = request.user
+        ip_address = get_client_ip(request)
+        content = sanitize_string(request.data.get('content', None))
+
+        if not post_slug:
+            raise NotFound(detail= "A valid post must be provided")
+
+        try:
+            post = Post.objects.get(slug=post_slug)
+        except Post.DoesNotExist:
+            raise ValueError(f"Post: {post_slug} doesn't exist")
+
+        #crear comentario
+        comment = Comment.objects.create(
+            user=user,
+            post=post,
+            content=content
+        )
+        #Actualizar interaccion post
+        self._register_comment_interaction(comment, post, ip_address, user)
+        return self.response(f"Comment created for post {post_slug}")
+
+    def put(self, request):
+        comment_id = request.data.get('comment_id',None)
+        user = request.user
+        content = sanitize_string(request.data.get("content", None))
+
+        if not comment_id:
+            raise NotFound(detail= "A valid comment_id must be provided")
+        try:
+            comment = Comment.objects.get(id=comment_id, user=request.user)
+        except Comment.DoesNotExist:
+            raise ValueError(f"Comment with ID: {comment_id} and username: {user.username} doesn't exist")
+
+        comment.content = content
+        comment.save()
+        return self.response(f"Comment with ID: {comment_id},  It's Content Updated Successfully")
+
+    def delete(self, request):
+        comment_id = request.query_params.get('comment_id',None)
+
+        if not comment_id:
+            raise NotFound(detail= "A valid comment_id must be provided")
+        try:
+            comment = Comment.objects.get(id=comment_id, user=request.user)
+        except Comment.DoesNotExist:
+            raise ValueError(f"Comment with ID: {comment_id} and username: {user.username} doesn't exist")
+        comment.delete()
+
+        return self.response("Comment delete Succesfully")
+
+    def _register_comment_interaction(self, comment, post, ip_address, user):
+
+        # Registrar la interacción tipo "comment"
+        PostInteraction.objects.create(
+            user=user,
+            post=post,
+            interaction_type="comment",
+            comment=comment,
+        )
+        # Incrementar el contador de comentarios
+        analytics, _ = PostAnalytics.objects.get_or_create(post=post)
+        analytics.increment_metric("comments")
 
 class CategoryListView(StandardAPIView):
     def get(self, request, *args, **kwargs):
@@ -280,6 +397,17 @@ class CategoryDetailView(StandardAPIView):
 class GenerateFakePostsView(StandardAPIView):
     def get(self, request):
         fake = Faker()
+
+        # asegurar que exista un editor
+        user, _ = UserAccount.objects.get_or_create(
+            username="test_editor",
+            defaults={
+                "email": "test_editor@example.com",
+                "password": 'admin1',
+                "is_staff": True,
+            },
+        )
+
         categories = list(Category.objects.all())
         if not categories:
             return self.response("No hay categorias disponibles para asignar a los posts",400)
@@ -288,8 +416,10 @@ class GenerateFakePostsView(StandardAPIView):
         status_options = ["draft", "published"]
         for _ in range(posts_to_generate):
             title = fake.sentence(nb_words=6)
+            user = UserAccount.objects.get(username="test_editor")
             post = Post(
                 id=uuid.uuid4(),
+                user=user,
                 title=title,
                 description = fake.sentence(nb_words=12),
                 content=fake.paragraph(nb_sentences=5),
@@ -300,6 +430,9 @@ class GenerateFakePostsView(StandardAPIView):
             )
             post.save()
         return self.response(f"{posts_to_generate} posts generados exitosamente.")
+
+    def __str__(self):
+        return self.user.username
 
 class GenerateFakeAnalyticsView(StandardAPIView):
     def get(self, request):
@@ -324,3 +457,4 @@ class GenerateFakeAnalyticsView(StandardAPIView):
             analytics._update_click_through_rate()
             analytics.save()
         return self.response({"message": f"Analiticas generadas para {analytics_to_generate} posts."})
+

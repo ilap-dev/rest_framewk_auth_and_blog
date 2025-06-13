@@ -1,6 +1,4 @@
 import uuid
-from email.policy import default
-
 from django.db import models
 from django.utils import timezone
 from django.contrib.auth.models import (
@@ -44,11 +42,21 @@ class UserAccountManager(BaseUserManager):
         user.is_superuser = True
         user.is_staff = True
         user.is_active = True
+        user.role = 'admin'
         user.save(using=self._db)
         return user
 
 
 class UserAccount(AbstractBaseUser, PermissionsMixin):
+    roles = (
+        ("admin","Admin"),
+        ("seller", "Seller"),
+        ("customer", "Customer"),
+        ("moderator", "Moderator"),
+        ("helper", "Helper"),
+        ("editor", "Editor"),
+    )
+
     id = models.UUIDField(default=uuid.uuid4, unique=True, primary_key=True)
     email = models.EmailField(unique=True)
     username =models.CharField(max_length=100, unique=True)
@@ -59,6 +67,8 @@ class UserAccount(AbstractBaseUser, PermissionsMixin):
     is_staff = models.BooleanField(default=False)
     is_superuser = models.BooleanField(default=False)
     update_at = models.DateTimeField(auto_now=True)
+    role = models.CharField(max_length=20, choices=roles, default="customer")
+    verified = models.BooleanField(default=False)
 
     two_factor_enabled = models.BooleanField(default=False)
     otpauth_url= models.CharField(max_length=225, blank=True, null=True)
